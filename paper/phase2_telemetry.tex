@@ -1,0 +1,211 @@
+% =========================================================================
+% Phase 2: Active Dual-Path Telemetry & 2x2 Steering Framework
+% File: paper/phase2_telemetry.tex
+% =========================================================================
+
+\section{Phase 2: Dual-Path Telemetry \& Flow Steering Framework}
+\label{sec:phase2_telemetry}
+
+Following the empirical transport calibration in Phase~1, Phase~2 establishes the active telemetry engine and dynamic flow-steering controller across the heterogeneous multi-backhaul topology. This framework decouples link health monitoring from application payloads, utilizing lightweight out-of-band active probing to drive sub-5\,ms kernel route actuation.
+
+\subsection{Candidate Backhaul Link Profiles}
+\label{subsec:backhaul_profiles}
+
+We configure two asymmetric candidate backhaul paths within the 3-namespace emulation testbed (\texttt{ns\_client}, \texttt{ns\_router}, \texttt{ns\_server}), reflecting the performance disparity typical of 5G-Advanced and 6G edge environments (Table~\ref{tab:phase2_profiles}).
+
+\begin{table}[htbp]
+\caption{Heterogeneous Backhaul Profile Configurations (Phase 2)}
+\label{tab:phase2_profiles}
+\centering
+\begin{tabular}{lcc}
+\toprule
+\textbf{Parameter} & \textbf{Link A (Fiber)} & \textbf{Link B (Cellular)} \\
+\midrule
+Bottleneck Capacity & 100\,Mbit/s & 50\,Mbit/s \\
+Subnet Assignment & 10.0.1.0/24 & 10.0.2.0/24 \\
+Injected Delay (One-Way) & 2.0\,ms & 25.0\,ms \\
+Nominal Base RTT & $\approx 4.3$\,ms & $\approx 50.7$\,ms \\
+Delay Jitter Distribution & 0.0\,ms & $\pm 0.5$\,ms (Gaussian) \\
+Stochastic Packet Loss & 0.0\% & 0.0\% (nominal) \\
+Target Service Class & URLLC / Primary Backup & eMBB / Active Default \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Destination IP Invariance \& Source-Policy Routing}
+\label{subsec:policy_routing}
+
+To enable transparent flow re-anchoring without requiring application-level socket migration or remote server reconfiguration, the target server (\texttt{ns\_server}) is assigned an invariant IP address (\texttt{10.0.3.2}) behind the gateway router (\texttt{ns\_router}). 
+
+Concurrent dual-path path monitoring is decoupled from the active user payload route via Linux source-policy routing tables on \texttt{ns\_client}:
+\begin{itemize}
+    \item \textbf{Table 101 (Link A)}: Packets sourced from \texttt{10.0.1.1} are explicitly directed out through interface \texttt{veth\_client\_a} via gateway \texttt{10.0.1.2}.
+    \item \textbf{Table 102 (Link B)}: Packets sourced from \texttt{10.0.2.1} are explicitly directed out through interface \texttt{veth\_client\_b} via gateway \texttt{10.0.2.2}.
+    \item \textbf{Main Routing Table}: Governs untagged user traffic. Initialized to Link B (\texttt{10.0.2.2}) and updated atomically to Link A upon SLA violation triggers.
+\end{itemize}
+
+\subsection{Dual-Path Telemetry Engine Formulation}
+\label{subsec:telemetry_engine}
+
+The telemetry engine runs asynchronously inside \texttt{ns\_client} at a fixed sampling interval $T_{\text{poll}} = 100$\,ms (10\,Hz). It transmits concurrent 64-byte raw ICMP Echo Request packets with nanosecond-resolution monotonic timestamps:
+\begin{equation}
+RTT(t) = (t_{\text{recv}} - t_{\text{send}}) \times 1000.0 \quad (\text{ms})
+\end{equation}
+
+On each polling tick $t$, the daemon updates three statistical estimators:
+\begin{enumerate}
+    \item \textbf{Raw Sample ($RTT(t)$)}: Captures instantaneous channel variations, queuing surges, and transient channel fades.
+    \item \textbf{Smoothed RTT ($SRTT$)}: An Exponentially Weighted Moving Average (EWMA, RFC 6298):
+    \begin{equation}
+    SRTT_k = (1 - \alpha) \cdot SRTT_{k-1} + \alpha \cdot RTT(t), \quad \alpha = 0.125
+    \end{equation}
+    \item \textbf{Sliding Window Mean ($\mu_{\mathcal{W}}$)}: A First-In-First-Out (FIFO) buffer $\mathcal{W}$ tracking the preceding $N = 3$ samples ($300$\,ms historical depth):
+    \begin{equation}
+    \mu_{\mathcal{W}}(t) = \frac{1}{|\mathcal{W}_t|} \sum_{x \in \mathcal{W}_t} x
+    \end{equation}
+    \item \textbf{Persistence Violation Counters}: Tracking consecutive breaches against the latency ceiling $\tau = 65.0$\,ms:
+    \begin{align}
+    c_{\text{raw}}(t) &= 
+    \begin{cases}
+    c_{\text{raw}}(t-1) + 1, & \text{if } RTT(t) > \tau \\
+    0, & \text{otherwise}
+    \end{cases} \\
+    c_{\text{win}}(t) &= 
+    \begin{cases}
+    c_{\text{win}}(t-1) + 1, & \text{if } \mu_{\mathcal{W}}(t) > \tau \\
+    0, & \text{otherwise}
+    \end{cases}
+    \end{align}
+\end{enumerate}
+
+\subsection{The $2 \times 2$ Decision Policy Taxonomy}
+\label{subsec:policy_taxonomy}
+
+To investigate the trade-off between detection responsiveness and noise immunity, we formulate four steering policies spanning \emph{Filtering Depth} and \emph{Temporal Persistence} (Table~\ref{tab:policy_taxonomy_phase2}).
+
+\begin{table}[htbp]
+\caption{The $2 \times 2$ Flow Steering Policy Taxonomy}
+\label{tab:policy_taxonomy_phase2}
+\centering
+\begin{tabular}{lcc}
+\toprule
+\textbf{Persistence} & \textbf{Raw RTT ($N=1$)} & \textbf{Rolling Window ($N=3$)} \\
+\midrule
+\textbf{Single-Tick ($K=1$)} & \textbf{Policy 1: Strict Raw} & \textbf{Policy 3: Rolling Window} \\
+& $\mathcal{C}_1(t) = \mathbb{I}(RTT(t) > \tau)$ & $\mathcal{C}_3(t) = \mathbb{I}(\mu_{\mathcal{W}}(t) > \tau)$ \\[4pt]
+\textbf{Hysteresis ($K=2$)} & \textbf{Policy 2: Raw + Hysteresis} & \textbf{Policy 4: Window + Hysteresis} \\
+& $\mathcal{C}_2(t) = \prod_{j=0}^{K-1} \mathbb{I}(RTT(t-j) > \tau)$ & $\mathcal{C}_4(t) = \prod_{m=0}^{K-1} \mathbb{I}(\mu_{\mathcal{W}}(t-m) > \tau)$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The operational characteristics of each policy are structured as follows:
+\begin{itemize}
+    \item \textbf{Policy 1 (Strict Raw, $K=1$)}: Memoryless single-sample evaluation. Provides the fastest detection latency ($T_{\text{detect}} \approx 100$\,ms), but is highly prone to false-positive switching on transient wireless micro-bursts.
+    \item \textbf{Policy 2 (Raw + Hysteresis, $K=2$)}: Evaluates raw samples with two-tick confirmation ($200$\,ms). Rejects isolated 100\,ms spikes while avoiding multi-sample buffer lag.
+    \item \textbf{Policy 3 (Rolling Window Average, $N=3, K=1$)}: Arithmetic moving average over a 300\,ms window. Suppresses moderate jitter through sample dilution, but remains vulnerable to severe outlier spikes.
+    \item \textbf{Policy 4 (Window + Hysteresis, $N=3, K=2$)}: Requires the sliding window mean to violate $\tau$ for two consecutive intervals ($K=2$). Delivers maximum conservative noise protection.
+\end{itemize}
+
+\begin{algorithm}[htbp]
+\caption{Phase 2 Dual-Path Telemetry and Flow Steering Engine}
+\label{alg:phase2_steering}
+\begin{algorithmic}[1]
+\REQUIRE Link set $\mathcal{L} = \{A, B\}$, period $T_{\text{poll}} = 100$\,ms, threshold $\tau = 65$\,ms, window size $N = 3$, persistence $K = 2$, policy $\mathcal{P} \in \{1, 2, 3, 4\}$.
+\STATE $i^* \leftarrow \arg\min_{i \in \mathcal{L}} (\text{ProbePathLatency}(i))$
+\STATE $\text{ApplyDefaultRoute}(i^*)$; \quad $\mathcal{W} \leftarrow \emptyset$; \quad $c_{\text{raw}} \leftarrow 0$; \quad $c_{\text{win}} \leftarrow 0$
+\WHILE{Session is Active}
+    \STATE $\text{Sleep}(T_{\text{poll}})$
+    \STATE $rtt \leftarrow \text{ProbePathLatency}(i^*)$
+    \STATE $\mathcal{W}.\text{append}(rtt)$; \quad \textbf{if} $|\mathcal{W}| > N$ \textbf{then} $\mathcal{W}.\text{pop\_front}()$
+    \STATE $\mu_{\mathcal{W}} \leftarrow \frac{1}{|\mathcal{W}|}\sum_{x \in \mathcal{W}} x$
+    \STATE $c_{\text{raw}} \leftarrow (c_{\text{raw}} + 1)$ \textbf{if} $rtt > \tau$ \textbf{else} $0$
+    \STATE $c_{\text{win}} \leftarrow (c_{\text{win}} + 1)$ \textbf{if} $\mu_{\mathcal{W}} > \tau$ \textbf{else} $0$
+    \STATE $\text{trigger} \leftarrow \text{FALSE}$
+    \IF{$\mathcal{P} == 1$ \textbf{and} $rtt > \tau$} \STATE $\text{trigger} \leftarrow \text{TRUE}$
+    \ELSIF{$\mathcal{P} == 2$ \textbf{and} $c_{\text{raw}} \ge K$} \STATE $\text{trigger} \leftarrow \text{TRUE}$
+    \ELSIF{$\mathcal{P} == 3$ \textbf{and} $\mu_{\mathcal{W}} > \tau$} \STATE $\text{trigger} \leftarrow \text{TRUE}$
+    \ELSIF{$\mathcal{P} == 4$ \textbf{and} $c_{\text{win}} \ge K$} \STATE $\text{trigger} \leftarrow \text{TRUE}$
+    \ENDIF
+    \IF{$\text{trigger} == \text{TRUE}$ \textbf{and} $i^* \neq A$}
+        \STATE $\text{NetlinkReplaceDefaultRoute}(A)$
+        \STATE $i^* \leftarrow A$; \quad \textbf{break}
+    \ENDIF
+\ENDWHILE
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Empirical Telemetry \& Actuation Performance Analysis}
+\label{subsec:empirical_telemetry_results}
+
+We empirically validate the telemetry engine across three dimensions: path measurement accuracy, bandwidth overhead, and route switching latency.
+
+\subsubsection{Path Measurement Accuracy \& Jitter Fidelity}
+Over a continuous measurement benchmark of 30 probing cycles ($T_{\text{poll}} = 100$\,ms), the measured delay statistics closely match the traffic control configurations (Table~\ref{tab:telemetry_accuracy}).
+
+\begin{table}[htbp]
+\caption{Empirical Telemetry Probing Accuracy (30 Consecutive Probes)}
+\label{tab:telemetry_accuracy}
+\centering
+\begin{tabular}{lccccc}
+\toprule
+\textbf{Interface} & \textbf{Nominal Target} & \textbf{Mean RTT} & \textbf{Std Dev ($\sigma$)} & \textbf{Min RTT} & \textbf{Max RTT} \\
+\midrule
+Link A (Fiber) & 4.30\,ms & \textbf{4.456\,ms} & 0.123\,ms & 4.226\,ms & 4.762\,ms \\
+Link B (Cellular) & 50.70\,ms & \textbf{50.581\,ms} & 0.146\,ms & 50.356\,ms & 51.000\,ms \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The empirical deviations remain under $3.6\%$ on Link A and under $0.2\%$ on Link B. The tightly bounded standard deviation ($\sigma \le 0.15$\,ms) confirms that Linux network namespace virtualization introduces negligible scheduling noise.
+
+\subsubsection{Bandwidth Overhead Analysis}
+Active probing transmits one 64-byte probe per path every 100\,ms. The resulting bandwidth overhead is:
+\begin{equation}
+R_{\text{probe}} = 64\text{ bytes} \times 8\text{ bits/byte} \times 10\text{ packets/s} = 5.12\text{ kbit/s per link}
+\end{equation}
+yielding a combined dual-path bandwidth of $10.24$\,kbit/s ($1.28$\,KB/s). Relative to the bottleneck bandwidths, the telemetry consumes only $0.0051\%$ of Link A ($100$\,Mbit/s) and $0.0102\%$ of Link B ($50$\,Mbit/s). Thus, the out-of-band monitoring daemon imposes negligible overhead on user payload transfers.
+
+\subsubsection{Kernel Route Actuation Latency}
+To quantify the delay incurred when updating the Linux routing table, we measured the execution latency of atomic Netlink default route replacement commands (\texttt{ip route replace default via ... dev ...}) over 20 consecutive transitions within \texttt{ns\_client}:
+\begin{itemize}
+    \item \textbf{Mean Actuation Latency}: $\mathbf{4.715}$\,ms ($\sigma = 0.657$\,ms).
+    \item \textbf{Minimum Latency}: $3.674$\,ms.
+    \item \textbf{Maximum Latency}: $6.059$\,ms.
+\end{itemize}
+
+Because kernel route replacement completes in under 5\,ms---less than $5\%$ of the $100$\,ms polling interval---steering decisions take effect almost instantaneously relative to the decision cadence. This confirms that route switching introduces zero in-flight routing ambiguity, providing the deterministic foundation for the Phase~3 comparative robustness evaluation.
+
+\subsection{Theoretical Algorithmic Complexity \& Analytical Bounds}
+\label{subsec:theoretical_bounds}
+
+The four policies exhibit distinct theoretical properties in computational overhead, memory footprint, and noise sensitivity (Table~\ref{tab:theoretical_bounds}):
+
+\begin{table}[htbp]
+\caption{Theoretical Algorithmic Properties and Bounds}
+\label{tab:theoretical_bounds}
+\centering
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Policy} & \textbf{Memory} & \textbf{State} & \textbf{Nominal Bound} & \textbf{Noise Transfer} \\
+& \textbf{Complexity} & \textbf{Tracking} & \textbf{($T_{\text{min}}$)} & \textbf{Characteristic} \\
+\midrule
+Policy 1 & $O(1)$ & None & $1 \cdot T_{\text{poll}} = 100$\,ms & All-pass filter \\
+Policy 2 & $O(1)$ & 1 counter & $K \cdot T_{\text{poll}} = 200$\,ms & Persistence check \\
+Policy 3 & $O(N)$ & $N$ samples & $1 \cdot T_{\text{poll}} = 100$\,ms & Moving average FIR \\
+Policy 4 & $O(N)$ & $N$ + 1 counter & $K \cdot T_{\text{poll}} = 200$\,ms & Dual-stage filter \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Under an isolated micro-burst of magnitude $RTT(t) = \tau + \Delta$ starting from nominal baseline $RTT_0 < \tau$:
+\begin{itemize}
+    \item \textbf{Policy 1} triggers unconditionally for any $\Delta > 0$.
+    \item \textbf{Policy 2} resets $c_{\text{raw}} \to 0$ upon the subsequent compliant sample, filtering any disturbance shorter than $K \cdot T_{\text{poll}}$.
+    \item \textbf{Policy 3} absorbs the burst whenever the perturbation satisfies:
+    \begin{equation}
+    \Delta \le N \cdot (\tau - RTT_0)
+    \end{equation}
+    \item \textbf{Policy 4} enforces both buffer dilution and multi-interval persistence, providing dual-layer protection against extreme wireless volatility.
+\end{itemize}
+

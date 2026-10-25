@@ -1,0 +1,78 @@
+{
+    "global_settings": {
+        "iterations_per_config": 10,
+        "cooldown_seconds": 5,
+        "core_script_path": "./lftp-migration-test.sh",
+        "results_dir": "./results",
+        "cwnd_mode": "cubic"
+    },
+    "baseline_control": {
+        "pure_baseline": {
+            "rate": "50mbit",
+            "latency": "",
+            "jitter": "",
+            "loss": "",
+            "output_name": "pure_baseline_control"
+        }
+    },
+    "parametric_sweeps": {
+        "latency_sweep": {
+            "rate": "50mbit",
+            "latency_values": [
+                "10ms",
+                "20ms",
+                "40ms",
+                "80ms",
+                "160ms"
+            ],
+            "jitter": "0ms",
+            "loss": "0%"
+        },
+        "loss_sweep": {
+            "rate": "50mbit",
+            "latency": "20ms",
+            "jitter": "0ms",
+            "loss_values": [
+                "0.1%",
+                "0.5%",
+                "1%",
+                "2%",
+                "5%"
+            ]
+        },
+        "jitter_sweep": {
+            "rate": "50mbit",
+            "latency": "40ms",
+            "jitter_values": [
+                "2ms",
+                "5ms",
+                "10ms",
+                "20ms"
+            ],
+            "loss": "0%"
+        }
+    },
+    "scenario_profiles": [
+        {
+            "name": "profile_6g_ideal",
+            "rate": "100mbit",
+            "latency": "2ms",
+            "jitter": "0ms",
+            "loss": "0%"
+        },
+        {
+            "name": "profile_5g_congested",
+            "rate": "50mbit",
+            "latency": "25ms",
+            "jitter": "5ms",
+            "loss": "0.5%"
+        },
+        {
+            "name": "profile_lte_poor",
+            "rate": "15mbit",
+            "latency": "60ms",
+            "jitter": "15ms",
+            "loss": "2.5%"
+        }
+    ]
+}

@@ -1,0 +1,5 @@
+Dimension,TCP CUBIC (Exp 3),TCP Reno (Exp 4),Delta (Reno - CUBIC),Scientific Conclusion
+Mean Latency Sweep Baseline Time,34.34 s,43.15 s,+8.80 s,CUBIC significantly outperforms Reno under high latency (RTT-independent growth)
+Mean Latency Sweep Overhead (ΔT),3.00 s,4.47 s,+1.47 s,Both protocols scale linearly with RTT; Reno incurs additional slow-start delay
+Average Loss Goodput (0.1%-5%),4.56 Mbps,4.63 Mbps,+0.07 Mbps,Both algorithms suffer severe goodput collapse under channel packet loss
+Handover Invariance Preservation,Strictly Invariant (100MB vs 200MB),Strictly Invariant (100MB vs 200MB),0.00 s,Handover Invariance Law holds across both CCAs across all impairment sweeps

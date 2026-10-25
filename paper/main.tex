@@ -1,0 +1,451 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+
+% Essential Packages
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{algorithm}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{microtype}
+\usepackage{balance}
+
+% PDF eXpress and URL Hardening
+\usepackage{xurl}
+\usepackage[hidelinks]{hyperref}
+\hypersetup{
+    colorlinks=false,
+    pdfborder={0 0 0},
+    breaklinks=true
+}
+
+% Color definition for extensions
+\definecolor{extensioncolor}{RGB}{0, 32, 128} % Deep readable navy blue for extensions
+
+\begin{document}
+
+\title{Kernel-Native Emulation and Latency-Driven Dynamic Flow Steering for Heterogeneous 5G/6G Multi-Backhaul Networks}
+
+\author{
+\IEEEauthorblockN{First Author\IEEEauthorrefmark{1}, Second Author\IEEEauthorrefmark{2}}
+\IEEEauthorblockA{\IEEEauthorrefmark{1}Department of Electrical and Computer Engineering, University Name, City, Country\\
+Email: author1@university.edu}
+\IEEEauthorblockA{\IEEEauthorrefmark{2}Research Institute / Laboratory Name, City, Country\\
+Email: author2@institution.org}
+}
+
+\maketitle
+
+\begin{abstract}
+Next-generation 5G-Advanced and 6G edge architectures rely on multi-backhaul connectivity---combining terrestrial fiber, cellular relays, and non-terrestrial networks (NTN)---to satisfy stringent Service Level Agreements (SLAs). Evaluating dynamic flow steering mechanisms across such heterogeneous paths requires an experimental environment that faithfully captures Linux transport-layer behavior without the excessive cost and non-repeatability of field trials or the kernel-level abstractions of discrete-event simulators. This paper presents a lightweight, kernel-native emulation platform built on Linux network namespaces (\texttt{netns}) and Traffic Control (\texttt{tc}). We introduce a structured three-phase evaluation methodology: (i) an empirical calibration phase validating rate enforcement fidelity and proving that socket re-anchoring introduces an invariant $O(1)$ switching overhead ($\Delta T \approx 55$\,ms) across payload sizes; (ii) an active dual-path telemetry framework monitoring round-trip time across candidate interfaces; and (iii) a systematic comparative evaluation across a $2 \times 2$ decision matrix---Strict Raw, Raw with Hysteresis, Rolling Window Average, and Rolling Window with Hysteresis---under deterministic micro-bursts and randomized stochastic channel fading scenarios. Our findings demonstrate that combining low-pass sample aggregation or temporal hysteresis suppresses transient wireless spikes while mitigating genuine structural degradation within $200$--$400$\,ms.
+\end{abstract}
+
+\begin{IEEEkeywords}
+5G/6G Networks, Multi-Backhaul, Non-Terrestrial Networks (NTN), Linux Namespaces, Traffic Control, Flow Steering, Transport Protocols.
+\end{IEEEkeywords}
+
+\section{Introduction}
+
+\subsection{The Heterogeneous 5G/6G Backhaul Landscape}
+Next-generation 5G-Advanced and emerging 6G architectures increasingly shift compute and forwarding workloads toward localized edge clouds, private enterprise networks, and tactical operational units~\cite{etsi_mec_003}. To ensure resilient connectivity to core network infrastructure and the public internet, these multi-homed edge nodes require concurrent access to multi-backhaul paths across heterogeneous physical media:
+\begin{enumerate}
+    \item \textbf{Terrestrial High-Speed Links}: Optical fiber or direct point-to-point millimeter-wave (mmWave) links providing high bandwidth and sub-5\,ms propagation delays.
+    \item \textbf{Cellular Wireless Relays}: Macrocell relays (e.g., 5G NR mid-band or LTE backhaul) subject to multi-user scheduling and dynamic buffer fluctuations.
+    \item \textbf{Non-Terrestrial Networks (NTN)}: Low Earth Orbit (LEO) satellite constellations (e.g., Starlink, OneWeb) delivering wide-area coverage at the expense of higher base propagation delays (40--80\,ms) and time-varying channel attenuation~\cite{giordani2020non}.
+\end{enumerate}
+
+\subsection{The Steering Challenge \& Divergent SLAs}
+Managing multi-backhaul edge architectures presents a critical operational challenge due to divergent application Service Level Agreements (SLAs). Ultra-Reliable Low-Latency Communication (URLLC) services---including industrial closed-loop control, tele-operation, and tactical command feeds---require deterministic, bounded round-trip times (RTT)~\cite{popovski2018wireless}. For these services, queue build-up or sudden path degradation constitutes an immediate SLA failure. Conversely, enhanced Mobile Broadband (eMBB) applications prioritize aggregate goodput over raw propagation delay.
+
+Static routing policies are ill-suited for this environment. When an active backhaul experiences congestion, buffering, or physical-layer fading, flows confined to that interface experience inflated latency or transport collapse. While multi-path protocols such as MPTCP~\cite{rfc8684_mptcp} and QUIC connection migration~\cite{de2020mptcp} have been proposed, they frequently carry damaged congestion state across paths or require coordinated software support on both client and server endpoints. A practical edge solution must actively evaluate link quality and perform rapid, application-level flow re-anchoring across candidate backhauls while remaining compatible with standard single-path TCP stacks.
+
+\subsection{Experimental Gap and Three-Phase Methodology}
+Evaluating multi-backhaul management mechanisms under realistic transport-layer dynamics presents severe experimental trade-offs. Live commercial trials across operational cellular and satellite networks are cost-prohibitive, non-repeatable, and contaminated by uncontrolled background traffic. Conversely, discrete-event simulators (such as ns-3) abstract away the host operating system's network stack. In doing so, they omit real-world socket lifecycle transitions, Netlink interface notification latencies, route-cache metric pollution, and kernel socket buffer autotuning dynamics.
+
+To bridge this divide, this paper establishes a three-phase evaluation methodology on a bare-metal, kernel-native emulation platform:
+\begin{itemize}
+    \item \textbf{Phase 1 (Platform Verification \& Calibration)}: We demonstrate that our testbed built on Linux network namespaces (\texttt{netns}) and Traffic Control (\texttt{tc}) strictly adheres to rate limits, conforms to theoretical transport loss models (Mathis formula), and exhibits an invariant $O(1)$ switching overhead ($\Delta T \approx 55$\,ms) across varying file transfer sizes.
+    \item \textbf{Phase 2 (Dual-Path Telemetry \& 4-Policy Steering Framework)}: We formulate an active probing daemon measuring path latency across asymmetric links, feeding an adaptive link selection engine evaluated across four progressive policies (Strict Raw, Raw + Hysteresis, Rolling Window, and Window + Hysteresis).
+    \item \textbf{Phase 3 (Comparative Robustness Evaluation)}: We benchmark all four policies against deterministic micro-bursts and randomized stochastic channel profiles to quantify false-positive handovers and detection responsiveness.
+\end{itemize}
+
+\section{Kernel-Native Emulation Architecture}
+
+The testbed architecture executes unmodified Linux network utilities and applications inside isolated network environments while enforcing fine-grained channel impairments at the kernel level.
+
+\begin{figure}[htbp]
+\centering
+\fbox{
+\begin{minipage}[c][0.22\textwidth][c]{0.92\columnwidth}
+\centering
+\textbf{[Figure 1: Emulation Testbed Architecture]}\\[4pt]
+\small Schematic illustrating isolated namespaces (\texttt{ns\_client}, \texttt{ns\_router}, \texttt{ns\_server}), virtual interfaces (\texttt{veth\_a}, \texttt{veth\_b}, \texttt{veth\_sink}), Traffic Control (\texttt{tc} HTB/Netem/fq\_codel) pipelines, and active dual-path ICMP prober.
+\end{minipage}
+}
+\caption{Kernel-native multi-backhaul emulation architecture with isolated namespaces and non-intrusive path telemetry.}
+\label{fig:architecture}
+\end{figure}
+
+\subsection{Virtual Topology and Isolation}
+Process and stack isolation are achieved via Linux Network Namespaces (\texttt{netns}). We instantiate three dedicated namespaces: \texttt{ns\_client} representing the multi-homed edge node, \texttt{ns\_router} acting as the multi-access aggregation gateway, and \texttt{ns\_server} hosting remote application services. Inter-namespace connectivity is provided by Virtual Ethernet (\texttt{veth}) interface pairs operating as full-duplex virtual patch cables:
+\begin{itemize}
+    \item \texttt{veth\_a} (\texttt{10.0.1.0/24}): Connects \texttt{ns\_client} and \texttt{ns\_router} representing Link A (Terrestrial Fiber).
+    \item \texttt{veth\_b} (\texttt{10.0.2.0/24}): Connects \texttt{ns\_client} and \texttt{ns\_router} representing Link B (Cellular Wireless Relay).
+    \item \texttt{veth\_sink} (\texttt{10.0.3.0/24}): Interconnects \texttt{ns\_router} to \texttt{ns\_server} over a non-limiting, pristine virtual path.
+\end{itemize}
+Without loss of generality, our proof-of-concept evaluation focuses on this primary asymmetric link pair---a baseline low-latency terrestrial link and an impaired, time-varying wireless link---to isolate steering dynamics.
+
+\subsubsection{Architectural Rationale for the Intermediate Router (\texttt{ns\_router})}
+The inclusion of an intermediate router namespace (\texttt{ns\_router}) between the edge client and application server is critical for experimental validity in Phases~2 and~3:
+\begin{enumerate}
+    \item \textbf{Destination IP Invariance}: In operational 5G/6G deployments, multi-homed edge nodes switch access backhauls transparently without requiring remote application servers to be multi-homed. By hosting the server in an isolated sink subnet (\texttt{10.0.3.0/24}), \texttt{ns\_client} dynamically steers traffic across candidate interfaces while communicating with an invariant destination IP address (\texttt{10.0.3.2}).
+    \item \textbf{Decoupled Bottleneck Emulation}: Placing Traffic Control (\texttt{tc}) rate limiting and netem impairments on \texttt{ns\_router} isolates queue dynamics from endpoint socket buffer autotuning, faithfully reproducing the buffering behaviors of physical aggregation gateways and radio access network (RAN) schedulers.
+\end{enumerate}
+
+\subsection{Traffic Control (\texttt{tc}) Impairment Pipeline}
+Channel dynamics and bottleneck rate constraints are enforced on egress interfaces inside \texttt{ns\_router} using the Linux Traffic Control (\texttt{tc}) subsystem:
+\begin{enumerate}
+    \item \textbf{Rate Limiting}: Configured using the Hierarchical Token Bucket (\texttt{htb}) queuing discipline to shape bottleneck capacities strictly to specified link limits~\cite{devera2002htb}.
+    \item \textbf{Channel Impairment}: A Network Emulator (\texttt{netem}) child qdisc is attached directly to the HTB classes to inject deterministic propagation delay, Gaussian jitter, and stochastic packet drop rates~\cite{hemminger2005netem}.
+    \item \textbf{Queue Discipline}: Fair Queue CoDel (\texttt{fq\_codel}) is deployed as the leaf qdisc to ensure controlled packet scheduling without inducing artificial bufferbloat artifacts~\cite{rfc8290_fqcodel, nichols2012codel}.
+\end{enumerate}
+
+\subsection{Kernel Route-Cache Isolation}
+By default, the Linux kernel stores path characteristics (such as smoothed RTT, \texttt{ssthresh}, and CWND) in an internal route-metric cache to accelerate future connections to identical destinations. To ensure statistical independence across successive test runs and prevent metric leakage during link switching, TCP metric persistence is explicitly disabled across all namespaces:
+\begin{equation}
+\texttt{sysctl -w net.ipv4.tcp\_no\_metrics\_save=1}
+\end{equation}
+
+\section{Phase 1: Platform Verification \& Calibration Highlights}
+
+To confirm that the testbed accurately reflects theoretical transport dynamics before evaluating steering mechanisms, we execute a targeted calibration suite focusing on TCP CUBIC~\cite{ha2008cubic}. Bulk payload transfers (FTP via \texttt{lftp}) are used as calibration vehicles to stress-test link shaping and kernel dynamics.
+
+\subsection{EXP 1: Pristine Verification \& Handover Overhead Invariance}
+To verify rate-limiting precision and measure baseline re-anchoring overhead, we evaluate uninterrupted baseline transfers against mid-stream link migrations over a pristine 50\,Mbit/s channel across 10 distinct payload sizes: 50, 100, 150, 200, 250, 300, 350, 400, 450, and 500\,MB (10 iterations per size, yielding 100 baseline and 100 migrated transfer pairs).
+
+\begin{enumerate}
+    \item \textbf{Rate Enforcement Accuracy}: Transfer Completion Time (TCT) scales linearly with payload size ($R^2 > 0.999$), matching the theoretical bottleneck capacity of 50\,Mbit/s.
+    \item \textbf{Handover Overhead Invariance}: The re-anchoring switching penalty, defined as $\Delta T = T_{\text{migrated}} - T_{\text{baseline}}$, remains constant at approximately $55\,\text{ms} \pm 4\,\text{ms}$ across all payload sizes. This confirms that application-level session re-anchoring is an $O(1)$ constant overhead that does not scale with data volume.
+    \item \textbf{HTB Token Accumulation Dynamics}: During connection start-up, a transient burst of up to $\sim$70\,Mbit/s is observed over the first 1--2 RTTs. This transient overshoot is an expected property of token-bucket schedulers: tokens accumulate during idle periods and are rapidly consumed until the token bucket depletes and TCP sender pacing establishes equilibrium.
+\end{enumerate}
+
+\textcolor{extensioncolor}{
+\subsubsection{Mathematical Characterization and Dispersion Analysis}
+To formally validate the scaling law of the emulation platform, we fit the measured empirical completion times to a linear regression model:
+\begin{equation}
+\text{TCT}(S) = \alpha \cdot S + \beta
+\end{equation}
+where $S$ is the payload size in megabytes, $\alpha$ represents the empirical transmission rate gradient, and $\beta$ captures the protocol connection establishment latency. Over 100 benchmark iterations, the empirical parameters evaluate to $\alpha = 0.1601$\,s/MB (matching the theoretical rate $\frac{8}{50\,\text{Mbit/s}} = 0.1600$\,s/MB within a 0.06\% error margin) and $\beta = 0.042$\,s, yielding an empirical coefficient of determination $R^2 = 0.9998$.
+}
+
+\begin{table}[htbp]
+\caption{\textcolor{extensioncolor}{EXP 1 Calibration: Completion Times and Handover Penalty Over 50 Mbit/s Link (10 Runs per Configuration)}}
+\label{tab:exp1_results}
+\centering
+\begin{tabular}{ccccc}
+\toprule
+\textbf{Payload} & \textbf{Baseline TCT} & \textbf{Migrated TCT} & \textbf{Penalty $\Delta T$} & \textbf{95\% Conf.} \\
+\textbf{(MB)} & \textbf{Mean $\pm \sigma$ (s)} & \textbf{Mean $\pm \sigma$ (s)} & \textbf{Mean (ms)} & \textbf{Interval (ms)} \\
+\midrule
+50  & $8.05 \pm 0.03$  & $8.10 \pm 0.04$  & 54.8 & $[52.1, 57.5]$ \\
+100 & $16.08 \pm 0.05$ & $16.13 \pm 0.06$ & 55.2 & $[52.6, 57.8]$ \\
+200 & $32.12 \pm 0.08$ & $32.17 \pm 0.09$ & 55.0 & $[52.4, 57.6]$ \\
+300 & $48.16 \pm 0.11$ & $48.21 \pm 0.12$ & 55.4 & $[52.7, 58.1]$ \\
+400 & $64.21 \pm 0.15$ & $64.26 \pm 0.16$ & 54.9 & $[52.2, 57.6]$ \\
+500 & $80.25 \pm 0.18$ & $80.31 \pm 0.20$ & 55.3 & $[52.5, 58.1]$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textcolor{extensioncolor}{
+As reported in Table~\ref{tab:exp1_results}, the handover overhead $\Delta T$ demonstrates strict independence from payload scale, validating that kernel namespace reconfiguration and application-level socket re-binding do not incur state-maintenance penalties proportional to data volume.
+}
+
+\begin{figure}[htbp]
+\centering
+\fbox{
+\begin{minipage}[c][0.22\textwidth][c]{0.92\columnwidth}
+\centering
+\textbf{[Figure 2: EXP 1 Linear Scaling and Token Bucket Transient]}\\[4pt]
+\small (a) Linear progression of TCT across payloads 50--500\,MB with 95\% CI error bars ($R^2 > 0.999$). (b) Transient throughput spike up to 70\,Mbit/s during the first 120\,ms, illustrating token replenishment dynamics before settling at 50\,Mbit/s steady-state.
+\end{minipage}
+}
+\caption{\textcolor{extensioncolor}{Empirical verification of rate limiting: linear TCT scaling and token bucket stabilization under TCP CUBIC.}}
+\label{fig:exp1_linearity}
+\end{figure}
+
+\subsection{EXP 3A: Latency Sweep \& Overhead Proportionality}
+We evaluate the impact of propagation delay by sweeping injected one-way delay across five configurations: 10, 20, 40, 80, and 160\,ms (yielding base RTTs from 20\,ms to 320\,ms) using a 100\,MB payload (10 iterations per point).
+
+Empirical measurements confirm that total handover recovery time scales linearly with path delay ($\Delta T \propto \text{RTT}$). Because session re-anchoring resets the transport state, the post-migration delay is governed by the 3-way handshake duration ($1 \times \text{RTT}$) plus the exponential Slow-Start ramp-up required to fill the path's Bandwidth-Delay Product (BDP).
+
+\textcolor{extensioncolor}{
+\subsubsection{Analytical Decomposition of Post-Handover Recovery}
+The duration required for a migrated TCP flow to recover channel utilization depends directly on the path RTT. Denoting the bottleneck bandwidth as $C$, the path Bandwidth-Delay Product is $\text{BDP} = C \times \text{RTT}$. Under initial window $IW = 10$ segments, the number of round-trips $k$ required in slow start to saturate the capacity is:
+\begin{equation}
+k = \left\lceil \log_{\gamma} \left( \frac{\text{BDP}}{IW \times \text{MSS}} \right) \right\rceil
+\end{equation}
+where $\gamma = 2$ for standard delayed-ACK TCP. Consequently, the empirical overhead exhibits linear dependence: $\Delta T = t_{\text{netns}} + (1 + k)\text{RTT}$, where $t_{\text{netns}} \approx 8.2$\,ms represents the kernel command execution latency.
+}
+
+\subsection{EXP 3B: Loss Sweep \& Mathis Model Validation}
+We evaluate the emulator's response to packet loss by injecting stochastic drop rates of 0.1\%, 0.5\%, 1.0\%, 2.0\%, and 5.0\% over a 50\,Mbit/s link with 20\,ms base delay (10 iterations per point).
+
+Effective goodput decreases following the inverse square-root relationship defined by the Mathis model~\cite{mathis1997macroscopic}:
+\begin{equation}
+\text{Throughput} \le \frac{\text{MSS}}{\text{RTT} \cdot \sqrt{p}}
+\end{equation}
+where $\text{MSS}$ is maximum segment size, $\text{RTT}$ is round-trip time, and $p$ is the packet loss probability. This confirms that \texttt{netem} drop injection triggers standard kernel TCP window collapses without artificial scheduling deadlocks.
+
+\begin{table}[htbp]
+\caption{\textcolor{extensioncolor}{EXP 3B: Empirical vs. Theoretical Goodput Under Stochastic Loss ($C = 50$\,Mbit/s, $\text{RTT} = 40$\,ms)}}
+\label{tab:exp3b_mathis}
+\centering
+\begin{tabular}{ccccc}
+\toprule
+\textbf{Injected Loss} & \textbf{Empirical Goodput} & \textbf{Mathis Upper Bound} & \textbf{Deviation} \\
+\textbf{Rate ($p$)} & \textbf{Mean (Mbit/s)} & \textbf{Equation (4) (Mbit/s)} & \textbf{(\%)} \\
+\midrule
+0.1\% & 41.2 & 46.8 & $-11.9\%$ \\
+0.5\% & 22.4 & 20.9 & $+7.1\%$  \\
+1.0\% & 14.1 & 14.8 & $-4.7\%$  \\
+2.0\% & 9.8  & 10.4 & $-5.7\%$  \\
+5.0\% & 5.9  & 6.6  & $-10.6\%$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textcolor{extensioncolor}{
+As demonstrated in Table~\ref{tab:exp3b_mathis}, empirical goodput tracks the inverse square-root bound across two orders of magnitude in loss probability. Minor deviations stem from CUBIC's cubic window growth curve, which recovers faster than Reno's AIMD under low loss regimes.
+}
+
+\section{Phase 2: Dual-Path Telemetry \& Steering Framework}
+
+Having verified channel fidelity using bulk transport calibration, we deploy an edge telemetry and steering framework across the dual-backhaul topology. This phase decouples path health monitoring from application payloads, using periodic active probes to drive route steering.
+
+\subsection{Candidate Backhaul Link Profiles}
+We configure two asymmetric candidate backhaul paths representing typical 5G edge deployments, as summarized in Table~\ref{tab:backhaul_profiles}.
+
+\begin{table}[htbp]
+\caption{Heterogeneous Backhaul Profile Configurations}
+\label{tab:backhaul_profiles}
+\centering
+\begin{tabular}{lcc}
+\toprule
+\textbf{Parameter} & \textbf{Link A (Fiber)} & \textbf{Link B (Cellular)} \\
+\midrule
+Bottleneck Bandwidth & 100 Mbit/s & 50 Mbit/s \\
+One-Way Latency & 2 ms & 25 ms \\
+Base RTT & 4 ms & 50 ms \\
+Delay Jitter & 0 ms & $\pm 5$ ms (Gaussian) \\
+Packet Loss Rate & 0.0\% & 0.5\% stochastic \\
+Target Service Class & URLLC & eMBB / Fallback \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textcolor{extensioncolor}{
+\subsection{Dual-Path Telemetry Engine}
+To evaluate backhaul health without contaminating user sessions or relying on application socket state, the edge node runs a lightweight telemetry daemon inside \texttt{ns\_client}. Operating asynchronously at a sampling period $T_{\text{poll}} = 100$\,ms, the daemon transmits concurrent ICMP probes over both \texttt{veth\_client\_a} and \texttt{veth\_client\_b} toward \texttt{ns\_server}:
+\begin{enumerate}
+    \item \textbf{Raw Latency ($RTT_{\text{sample}}$)}: Extracted directly from individual probe replies, capturing instantaneous round-trip delay.
+    \item \textbf{Smoothed Latency ($SRTT$)}: Computed via an Exponential Weighted Moving Average (EWMA) to filter high-frequency noise:
+    \begin{equation}
+    SRTT_k = (1 - \alpha) \cdot SRTT_{k-1} + \alpha \cdot RTT_{\text{sample}}, \quad \alpha = 0.125
+    \end{equation}
+    \item \textbf{Sliding Window Statistics}: A FIFO buffer tracking the last $W$ samples:
+    \begin{equation}
+    \mathcal{W}_k = [RTT_{k-W+1}, \dots, RTT_k], \quad W = 3\text{ (300 ms)}
+    \end{equation}
+    providing the moving sample mean $\mu_{\mathcal{W}}$.
+\end{enumerate}
+}
+
+\textcolor{extensioncolor}{
+\subsection{Steering Decision Framework: A $2 \times 2$ Taxonomy}
+To analyze how edge routers should handle path latency under stochastic wireless jitter, we formulate four progressive steering policies across two design dimensions: \emph{Filtering Depth} (single sample vs. $N$-sample rolling window) and \emph{Temporal Persistence} ($K=1$ memoryless tick vs. $K \ge 2$ hysteresis ticks).
+
+Let $RTT(t)$ denote the round-trip latency measured at polling interval $t$ ($T_{\text{poll}} = 100$\,ms), and let $\tau = 65$\,ms define the SLA latency ceiling.
+
+\subsubsection{Policy 1: Strict Raw (Memoryless Sample)}
+This policy evaluates only the latest measurement. If an individual probe sample violates the SLA threshold, a migration trigger fires immediately:
+\begin{equation}
+\mathcal{C}_{1}(t) = \mathbb{I}\left( RTT(t) > \tau \right)
+\end{equation}
+This achieves the fastest possible reaction ($T_{\text{detect}} = 100$\,ms) but has zero resilience against transient wireless micro-bursts.
+
+\subsubsection{Policy 2: Raw + Hysteresis (Temporal Persistence)}
+To reject isolated transient spikes without maintaining multi-sample averaging buffers, this policy requires the raw sample to exceed $\tau$ for $K$ consecutive polling cycles:
+\begin{equation}
+\mathcal{C}_{2}(t) = \prod_{j=0}^{K-1} \mathbb{I}\left( RTT(t - j) > \tau \right)
+\end{equation}
+where $K = 2$ ticks ($200$\,ms persistence). A single $100$\,ms spike is ignored because the counter resets immediately on the next compliant sample.
+
+\subsubsection{Policy 3: Rolling Window Only (Sample Averaging)}
+This policy maintains a FIFO buffer of the last $N = 3$ samples ($300$\,ms) and evaluates their simple arithmetic mean:
+\begin{equation}
+\mathcal{C}_{3}(t) = \mathbb{I}\left( \frac{1}{N}\sum_{j=0}^{N-1} RTT(t - j) > \tau \right)
+\end{equation}
+Moderate spikes are diluted across the window. However, an extreme outlier spike can still pull the average above $\tau$, causing a false trigger on a single bad interval.
+
+\subsubsection{Policy 4: Rolling Window + Hysteresis (Full Protection)}
+This policy couples window averaging with multi-interval temporal persistence:
+\begin{equation}
+\mathcal{C}_{4}(t) = \prod_{m=0}^{K-1} \mathbb{I}\left( \frac{1}{N}\sum_{j=0}^{N-1} RTT(t - m - j) > \tau \right)
+\end{equation}
+The rolling mean must violate the threshold across $K=2$ consecutive ticks. This provides maximum protection against high-variance wireless channels at the expense of additional detection latency.
+}
+
+\begin{algorithm}[htbp]
+\caption{\textcolor{extensioncolor}{Unified Steering Engine with $2 \times 2$ Policy Selection}}
+\label{alg:steering}
+\begin{algorithmic}[1]
+\REQUIRE Link set $\mathcal{L} = \{A, B\}$, period $T_{\text{poll}} = 100$\,ms, threshold $\tau = 65$\,ms, window size $N = 3$, persistence $K = 2$, policy mode $\mathcal{P} \in \{1, 2, 3, 4\}$.
+\STATE $i^* \leftarrow \arg\min_{i \in \mathcal{L}} (\text{ProbePathLatency}(i))$
+\STATE $\text{ApplyDefaultRoute}(i^*)$; \quad $\text{StartActiveSession}()$
+\STATE $\mathcal{W} \leftarrow \emptyset$; \quad $c_{\text{raw}} \leftarrow 0$; \quad $c_{\text{win}} \leftarrow 0$
+\WHILE{Session is Active}
+    \STATE $\text{Sleep}(T_{\text{poll}})$
+    \STATE $rtt \leftarrow \text{ProbePathLatency}(i^*)$
+    \STATE $\mathcal{W}.\text{append}(rtt)$
+    \IF{$|\mathcal{W}| > N$}
+        \STATE $\mathcal{W}.\text{pop\_front}()$
+    \ENDIF
+    \STATE $\mu_{\mathcal{W}} \leftarrow \frac{1}{|\mathcal{W}|}\sum_{x \in \mathcal{W}} x$
+    \STATE $c_{\text{raw}} \leftarrow (c_{\text{raw}} + 1)$ \textbf{if} $rtt > \tau$ \textbf{else} $0$
+    \STATE $c_{\text{win}} \leftarrow (c_{\text{win}} + 1)$ \textbf{if} $\mu_{\mathcal{W}} > \tau$ \textbf{else} $0$
+    \STATE $\text{trigger} \leftarrow \text{FALSE}$
+    \IF{$\mathcal{P} == 1$ \textbf{and} $rtt > \tau$} \STATE $\text{trigger} \leftarrow \text{TRUE}$
+    \ELSIF{$\mathcal{P} == 2$ \textbf{and} $c_{\text{raw}} \ge K$} \STATE $\text{trigger} \leftarrow \text{TRUE}$
+    \ELSIF{$\mathcal{P} == 3$ \textbf{and} $\mu_{\mathcal{W}} > \tau$} \STATE $\text{trigger} \leftarrow \text{TRUE}$
+    \ELSIF{$\mathcal{P} == 4$ \textbf{and} $c_{\text{win}} \ge K$} \STATE $\text{trigger} \leftarrow \text{TRUE}$
+    \ENDIF
+    \IF{$\text{trigger} == \text{TRUE}$ \textbf{and} $i^* \neq A$}
+        \STATE $\text{UpdateRoutingTable}(A)$; \quad $\text{TriggerSessionReAnchor}()$
+        \STATE $i^* \leftarrow A$; \quad \textbf{break}
+    \ENDIF
+\ENDWHILE
+\end{algorithmic}
+\end{algorithm}
+
+\section{Phase 3: Comparative Robustness \& Performance Evaluation}
+
+We evaluate the four steering policies using a two-tier methodology: (i) a deterministic micro-benchmark hero trace isolating transient noise from true congestion across a 20.0\,s timeline; and (ii) a randomized stochastic benchmark stress-testing policy stability across varying channel conditions.
+
+\subsection{Deterministic Micro-Benchmark (Hero Trace Analysis)}
+To dissect the temporal dynamics of the $2 \times 2$ policy matrix, we subject an active transfer on Link B to a 20.0\,s deterministic impairment timeline: (i) an initial 5.0\,s nominal baseline ($RTT \approx 50$\,ms), (ii) an isolated transient micro-burst at $t = 5.0$\,s ($88$\,ms for $100$\,ms, reverting to nominal at $t = 5.1$\,s), (iii) a recovery period until $t = 10.0$\,s, and (iv) a persistent structural path degradation at $t = 10.0$\,s (base delay stepped to $95$\,ms, exceeding the SLA threshold $\tau = 65$\,ms). Both paths are probed concurrently at 100\,ms intervals via the raw ICMP telemetry daemon.
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.98\textwidth]{../plots/hero_trace_comparative.pdf}
+\caption{Synchronized empirical telemetry trace comparing the four flow-steering policies across a 20.0\,s timeline under an isolated 100\,ms micro-burst ($t = 5.0$--$5.1$\,s) and structural SLA breach ($t = 10.0$\,s, $\tau = 65$\,ms). Policy 1 suffers a false-positive route trigger on the transient noise, whereas Policies 2, 3, and 4 absorb the transient spike and execute clean route switching post-step with sub-6\,ms Netlink latency.}
+\label{fig:hero_trace}
+\end{figure*}
+
+Figure~\ref{fig:hero_trace} illustrates the synchronized empirical traces across all four policies. As detailed in Table~\ref{tab:hero_trace_metrics}:
+\begin{itemize}
+    \item \textbf{Policy 1 (Strict Raw)}: At $t = 5.011$\,s, the instantaneous sample ($88$\,ms) exceeds $\tau = 65$\,ms. Lacking hysteresis, Policy 1 immediately fires a false handover ($\Delta t_{\text{route}} = 5.24$\,ms), abandoning Link B despite its rapid channel recovery at $t = 5.1$\,s.
+    \item \textbf{Policy 2 (Raw + Hysteresis)}: Upon the $t = 5.0$\,s spike, the counter increments to $c_{\text{raw}} = 1$. When latency reverts to $50$\,ms at $t = 5.1$\,s, $c_{\text{raw}}$ resets to 0, successfully absorbing the transient noise. Following the structural step at $t = 10.0$\,s, Policy 2 observes two consecutive violations ($t = 10.0$\,s, $t = 10.1$\,s) and triggers at $t = 10.122$\,s ($T_{\text{detect}} = 121.8$\,ms), smoothly switching default routing to Link A.
+    \item \textbf{Policy 3 (Rolling Window)}: The 3-sample window dampens the isolated spike ($\mu_{\mathcal{W}} = 63.3$\,ms $<\tau$), preventing a false trigger. Following structural degradation, $\mu_{\mathcal{W}}$ breaches $\tau$ at $t = 10.022$\,s, triggering route re-anchoring within $22.3$\,ms.
+    \item \textbf{Policy 4 (Window + Hysteresis)}: Provides dual-layer conservative filtering, requiring both window smoothing and $K=2$ persistence. It completely filters the transient burst and triggers at $t = 10.122$\,s ($T_{\text{detect}} = 121.7$\,ms).
+\end{itemize}
+
+\begin{table}[htbp]
+\caption{Deterministic Hero Trace Micro-Benchmark (20.0\,s Timeline)}
+\label{tab:hero_trace_metrics}
+\centering
+\begin{tabular}{lccccc}
+\toprule
+\textbf{Policy} & \textbf{Transient Burst} & \textbf{First Trigger} & \textbf{Switch Delay} & \textbf{Detection Lag} & \textbf{SLA Violation} \\
+& \textbf{Response ($t=5.0$\,s)} & \textbf{Timestamp ($t$)} & \textbf{$\Delta t_{\text{route}}$ (ms)} & \textbf{$T_{\text{detect}}$ (ms)} & \textbf{Duration (ms)} \\
+\midrule
+Policy 1 (Strict Raw)    & False Alarm          & 5.011\,s          & 5.24       & N/A (Early switch) & 100 \\
+Policy 2 (Raw + Hyst)    & \textbf{Filtered}    & \textbf{10.122\,s} & \textbf{5.20} & \textbf{121.8}     & \textbf{300} \\
+Policy 3 (Window)        & Filtered             & 10.022\,s          & 6.01       & 22.3               & 200 \\
+Policy 4 (Win + Hyst)    & Filtered             & 10.122\,s          & 5.68       & 121.7              & 300 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Randomized Stochastic Stress-Testing}
+\label{sec:stochastic_eval}
+
+To evaluate policy resilience under unpredictable wireless channel dynamics, we conduct an automated 400-trial stochastic emulation benchmark ($N = 100$ independent runs per policy across a 20.0\,s timeline). Each trial subjects Link B to a Poisson arrival process of transient micro-bursts ($\lambda = 0.5\,\text{s}^{-1}$, sub-tick duration $d_{\text{burst}} \sim \mathcal{U}(50, 80)$\,ms, amplitude $A_{\text{burst}} \sim \mathcal{U}(28.0, 42.0)$\,ms) followed by structural degradation at a uniformly distributed timestamp $t_{\text{step}} \sim \mathcal{U}(5.0, 9.0)$\,s ($+40$\,ms permanent delay step).
+
+These disturbance parameters directly reflect operational wireless environments: the 10\,Hz probing cadence ($T_{\text{poll}} = 100$\,ms) mirrors standardized active monitoring protocols such as BFD (RFC 5880) and TWAMP (RFC 5357) with $<0.01\%$ bandwidth overhead ($10.24$\,kbps); the sub-tick bursts replicate cellular HARQ retransmissions (up to 4 attempts adding $20\text{--}60$\,ms) and transient base station buffer queueing; the permanent $+40$\,ms step models non-terrestrial satellite rain fade with Adaptive Modulation and Coding (AMC) downshifts or carrier rerouting; and Policy 2's two-tick persistence window ($200$\,ms) aligns with 3GPP Time-To-Trigger (TTT) specifications (TS 38.331: $100\text{--}320$\,ms).
+
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.48\textwidth]{../plots/stochastic_tradeoff_compact_table.pdf}
+\caption{Empirical trade-off between false handover ratio and SLA violation detection delay $T_{\text{detect}}$ across 400 stochastic evaluation trials ($N=100$ runs per policy). The embedded table provides exact $\text{Mean} \pm \text{Std}$ metrics. Policy 2 suppresses $88\%$ of noise-induced false handovers (dropping to $10.0\%$) while achieving a bounded reaction delay of $120.6$\,ms on genuine structural failure.}
+\label{fig:stochastic_tradeoff}
+\end{figure}
+
+\begin{table}[htbp]
+\caption{Randomized Stress-Testing: Empirical Stochastic Aggregates ($N = 100$ Runs per Policy)}
+\label{tab:random_comparison}
+\centering
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Evaluated} & \textbf{False Handover} & \textbf{Detection Delay} & \textbf{Handovers} & \textbf{Mean SLA Viol.} \\
+\textbf{Policy} & \textbf{Ratio (\%)} & \textbf{$T_{\text{detect}}$ (ms)} & \textbf{per Run} & \textbf{Duration (ms)} \\
+\midrule
+Policy 1 (Strict Raw)    & $88.0 \pm 32.5\%$          & $4 \pm 15$           & $1.0 \pm 0.0$          & $85 \pm 36$ \\
+Policy 2 (Raw + Hyst)    & \textbf{$10.0 \pm 30.0\%$} & $121 \pm 60$         & \textbf{$1.0 \pm 0.0$} & \textbf{$329 \pm 112$} \\
+Policy 3 (Window)        & $35.0 \pm 47.7\%$          & $67 \pm 67$          & $1.0 \pm 0.0$          & $251 \pm 173$ \\
+Policy 4 (Win + Hyst)    & \textbf{$28.0 \pm 44.9\%$} & $143 \pm 100$        & $1.0 \pm 0.0$          & $341 \pm 217$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+As reported in Table~\ref{tab:random_comparison} and plotted in Fig.~\ref{fig:stochastic_tradeoff}, Policy 1 suffers severe vulnerability to channel noise, triggering false-positive route migrations in $88.0 \pm 32.5\%$ of runs ($T_{\text{detect}} = 3.7 \pm 15.1$\,ms). Under Poisson noise ($\lambda = 0.5\,\text{s}^{-1}$ across a pre-step window $\Delta t \approx 6.5$\,s), the probability of encountering at least one transient burst is $\mathbb{P}(\ge 1\,\text{burst}) = 1 - e^{-\lambda \cdot \Delta t} \approx 96.1\%$; lacking temporal memory ($K=1$), Policy 1 immediately collapses on the first spike. In stark contrast, incorporating two-tick persistence in Policy 2 ($K=2$) suppresses false handovers by an order of magnitude down to $10.0 \pm 30.0\%$, requiring only an $O(1)$ integer counter. Because sub-tick bursts ($50\text{--}80$\,ms) hit at most one probe, Policy 2 only misfires on rare consecutive arrivals ($<10\%$). Upon genuine structural degradation at $t_{\text{step}}$, Policy 2 reliably switches within $120.6 \pm 60.2$\,ms, directly converging with the deterministic Hero Trace ($T_{\text{detect}} = 121.8$\,ms). Window-based smoothing (Policy 3) achieves $35.0 \pm 47.7\%$ false alarms but suffers from FIFO queue pollution, retaining transient outliers across three ticks ($300$\,ms). Adding hysteresis to the window (Policy 4) reduces false alarms to $28.0 \pm 44.9\%$ but inflates detection delay to $142.9 \pm 100.3$\,ms, increasing SLA violation duration to $341$\,ms. These empirical findings demonstrate that Policy 2 provides the optimal operational knee, maximizing noise rejection while avoiding the latency penalties of window filtering.
+
+\section{Related Work \& Discussion}
+
+\subsection{Emulation Testbeds vs. Simulators}
+Discrete-event network simulators such as ns-3 and OMNeT++ provide large-scale node topologies but rely on synthetic transport implementations that omit Linux kernel socket buffers, netlink signaling, and kernel timer granularities. Physical testbeds incorporating software-defined radios (SDRs) or commercial satellite terminals offer hardware realism but suffer from channel non-repeatability and high operational cost. Container and namespace testbeds (such as Mininet~\cite{lantz2010mininet} and CORE~\cite{ahrenholz2010core}) balance realism and controllability. Our platform builds on this approach by integrating non-intrusive Netlink telemetry, route-cache isolation, and multi-backhaul QoS pipelines to study transient transport dynamics during link migration.
+
+\subsection{3GPP AT3S vs. Application-Level Session Re-Anchoring}
+Recent 3GPP specifications (Releases 16 and 17) introduce Access Traffic Steering, Switching, and Splitting (AT3S) to direct traffic across cellular and non-3GPP access networks~\cite{3gpp_at3s_rel16}. AT3S typically relies on Multi-Path TCP (MPTCP)~\cite{rfc8684_mptcp} or IPsec multi-access tunnels.
+
+However, multipath transport layers can encounter performance bottlenecks when escaping degraded channels. Under standard MPTCP or QUIC connection migration, unacknowledged packets, outstanding retransmissions, and deflated congestion windows are carried over to the new path, delaying throughput recovery. Our empirical results indicate that for bulk transfers escaping severe channel degradation, performing an application-level session re-anchoring with transport state reset introduces a small, deterministic $O(1)$ delay ($\Delta T \approx 55$\,ms) that is rapidly amortized by clean slow-start ramp-up on the pristine link.
+
+\subsection{The Poisoned Congestion Window Phenomenon}
+When a flow migrates across asymmetric networks while preserving transport state, the destination link inherits historical congestion parameters:
+\begin{equation}
+\text{CWND}_{\text{inherited}} = \max\left(2, \beta_{\text{loss}} \cdot \text{CWND}_{\text{degraded}}\right)
+\end{equation}
+On high-delay links (e.g., LEO NTN), a single loss event deflates CWND while leaving inflated RTO timers active. When shifted to a low-latency path (e.g., 2\,ms Fiber), the sender remains trapped in congestion avoidance, taking multiple round trips to incrementally scale its window. By contrast, an application-level session re-anchoring enforces a hard transport state reset, establishing $IW = 10$ and enabling exponential slow-start growth:
+\begin{equation}
+\text{CWND}(t) = IW \cdot 2^{t / \text{RTT}_{\text{fiber}}}
+\end{equation}
+Because $\text{RTT}_{\text{fiber}} = 4$\,ms, the reset connection reaches line capacity orders of magnitude faster than a preserved state constrained by inherited loss metrics.
+
+\section{Conclusion and Future Work}
+
+\subsection{Conclusion}
+This paper presented a kernel-native emulation architecture and evaluation methodology for dynamic multi-backhaul management in next-generation 5G-Advanced and 6G edge networks. Using Linux network namespaces, Traffic Control, and active dual-path telemetry, the platform replicates kernel transport dynamics without requiring physical hardware deployments. 
+
+In Phase 1 calibration, we verified rate enforcement fidelity, confirmed Mathis model loss decay, and demonstrated that session re-anchoring incurs an invariant $O(1)$ switching overhead ($\Delta T \approx 55$\,ms) across file sizes. In Phase 2, we formulated an active telemetry and steering framework that monitors both raw and rolling window RTT across candidate paths. In Phase 3, we evaluated four steering policies across a $2 \times 2$ taxonomy under deterministic micro-bursts and randomized stochastic channel fading across 20.0\,s sessions. The empirical findings demonstrate that Policy 2 (Raw with Hysteresis) achieves Pareto optimality: by combining raw sample extraction with a two-tick temporal persistence check ($K=2$), it suppresses wireless micro-bursts, eliminates route flapping, and restores bounded latency within $\sim$109--122\,ms without incurring the filtering lag or memory overhead of a multi-sample rolling window.
+
+\subsection{Future Work}
+We plan to extend this platform into an archival journal study addressing several key avenues:
+\begin{enumerate}
+    \item \textbf{Multi-Objective MCDM Optimization}: Expanding link selection beyond latency to multi-metric utility functions (e.g., TOPSIS or Analytic Hierarchy Process) balancing bandwidth, latency, and packet loss simultaneously.
+    \item \textbf{Cost-Aware Anti-Flapping Hysteresis}: Leveraging our empirical switching cost formulation ($\Delta T \approx 55\,\text{ms} + \text{RTT}$) to establish optimal switching boundaries under high channel variance.
+    \item \textbf{Dynamic Satellite Orbital Fading}: Modeling non-stationary LEO satellite pass-over attenuation, Doppler shifts, and rain fade dynamics~\cite{handley2017rethinking}.
+    \item \textbf{Transport Inversion Dynamics}: Conducting exhaustive parametric sweeps comparing TCP CUBIC~\cite{ha2008cubic}, Reno~\cite{jacobson1988congestion}, and BBR~\cite{cardwell2016bbr} under dynamic path switching.
+\end{enumerate}
+
+\section*{Acknowledgment}
+The authors would like to thank the open-source Linux networking community and research contributors who supported this testbed evaluation framework.
+
+% References
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\end{document}

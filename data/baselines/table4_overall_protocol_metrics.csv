@@ -1,0 +1,10 @@
+metric,tcp_cubic_exp1,tcp_reno_exp2,net_delta,scientific_conclusion
+Overall Mean Handover Overhead (ms),52.24 ms,54.67 ms,+2.43 ms,Statistically Insignificant (p > 0.05)
+Overall Median Handover Overhead (ms),52.20 ms,53.31 ms,+1.10 ms,Virtually Identical Handover Resumption
+Overall Standard Deviation (ms),30.67 ms,39.20 ms,+8.52 ms,Comparable Run-to-Run Variance
+Overall Variance (ms²),940.89 ms²,1536.25 ms²,+595.36 ms²,Slightly higher outlier sensitivity in Reno
+Minimum Observed Overhead (ms),-22.44 ms,-56.85 ms,-34.40 ms,Lower bound of socket setup dead-time
+Maximum Observed Overhead (ms),147.41 ms,207.17 ms,+59.77 ms,Upper bound influenced by OS scheduling delays
+Relative Overhead at 50 MB (%),0.48%,0.66%,+0.18%,Negligible penalty (< 0.7%) on small files
+Relative Overhead at 500 MB (%),0.08%,0.08%,-0.00%,Near-Zero penalty (< 0.09%) due to 1/S amortization
+Payload Scaling Dependence,Invariant O(1),Invariant O(1),Identical,Empirically Confirmed Handover Invariance Law
