@@ -6,7 +6,7 @@ This document provides a complete technical description and operational breakdow
 
 ## 1. Overview & Experimental Motivation
 
-While randomized stochastic evaluations ([`phase3_eval/STOCHASTIC_EXPERIMENT.md`](file:///home/ubuntu/papajohn/AMAZING_6G/PAPER/NEW_APPROACH/paper_repo/NEW%20EXPERIMENTS/phase3_eval/STOCHASTIC_EXPERIMENT.md)) demonstrate statistical robustness, a deterministic micro-benchmark is essential to **isolate and inspect the exact temporal mechanics** of the $2 \times 2$ policy matrix under identical, repeatable channel events.
+While randomized stochastic evaluations ([`STOCHASTIC_EVAL_SPEC.md`](file:///home/ubuntu/papajohn/AMAZING_6G/PAPER/NEW_APPROACH/adaptive_telemetry_steering/docs/STOCHASTIC_EVAL_SPEC.md)) demonstrate statistical robustness, a deterministic micro-benchmark is essential to **isolate and inspect the exact temporal mechanics** of the $2 \times 2$ policy matrix under identical, repeatable channel events.
 
 The Hero Trace benchmark answers two critical operational questions:
 1. **Transient Noise Resilience:** When a temporary wireless micro-burst occurs, does the policy absorb the transient disturbance or cause a costly premature false switch?
@@ -16,7 +16,7 @@ The Hero Trace benchmark answers two critical operational questions:
 
 ## 2. Experimental Setup & Channel Timeline
 
-The experiment is executed on the 3-namespace Linux emulation platform ([`scripts/setup_phase2_topology.sh`](file:///home/ubuntu/papajohn/AMAZING_6G/PAPER/NEW_APPROACH/paper_repo/NEW%20EXPERIMENTS/scripts/setup_phase2_topology.sh)) over a synchronized **20.0-second timeline** at a 10 Hz telemetry polling cadence ($T_{\text{poll}} = 100\text{ ms}$).
+The experiment is executed on the 3-namespace Linux emulation platform ([`topology/setup_topology.sh`](file:///home/ubuntu/papajohn/AMAZING_6G/PAPER/NEW_APPROACH/adaptive_telemetry_steering/topology/setup_topology.sh)) over a synchronized **20.0-second timeline** at a 10 Hz telemetry polling cadence ($T_{\text{poll}} = 100\text{ ms}$).
 
 ### 2.1 Backhaul Path Characteristics
 
@@ -54,7 +54,7 @@ Goal:          Stay on B    Ignore      Stay on B        Switch to Link A (~4.3 
 
 ## 3. Step-by-Step Policy Operation & Numbers
 
-Each of the four policies from [`phase2_telemetry/steering_controller.py`](file:///home/ubuntu/papajohn/AMAZING_6G/PAPER/NEW_APPROACH/paper_repo/NEW%20EXPERIMENTS/phase2_telemetry/steering_controller.py) was evaluated across this timeline. The resulting telemetry traces are stored in [`ANALYSIS_RESULTS/PHASE3/`](file:///home/ubuntu/papajohn/AMAZING_6G/PAPER/NEW_APPROACH/paper_repo/NEW%20EXPERIMENTS/ANALYSIS_RESULTS/PHASE3/).
+Each of the four policies from [`core/steering_controller.py`](file:///home/ubuntu/papajohn/AMAZING_6G/PAPER/NEW_APPROACH/adaptive_telemetry_steering/core/steering_controller.py) was evaluated across this timeline. The resulting telemetry traces are stored in [`data/hero_trace/`](file:///home/ubuntu/papajohn/AMAZING_6G/PAPER/NEW_APPROACH/adaptive_telemetry_steering/data/hero_trace/).
 
 ### Policy 1: Strict Raw (Single Sample, $K=1$)
 * **Algorithmic Condition:** $\mathcal{C}_1(t) = \mathbb{I}(RTT(t) > \tau)$
@@ -122,7 +122,7 @@ The empirical metrics measured across the deterministic 20.0s benchmark:
 Two graphical representations have been generated to illustrate these dynamics:
 
 1. **5-Panel Detailed Subplot Figure:**  
-   * Files: [`plots/hero_trace_5panel.png`](file:///home/ubuntu/papajohn/AMAZING_6G/PAPER/NEW_APPROACH/paper_repo/NEW%20EXPERIMENTS/plots/hero_trace_5panel.png) and [`plots/hero_trace_5panel.pdf`](file:///home/ubuntu/papajohn/AMAZING_6G/PAPER/NEW_APPROACH/paper_repo/NEW%20EXPERIMENTS/plots/hero_trace_5panel.pdf)
+   * Files: [`figures/hero_trace_5panel.png`](file:///home/ubuntu/papajohn/AMAZING_6G/PAPER/NEW_APPROACH/adaptive_telemetry_steering/figures/hero_trace_5panel.png) and [`figures/hero_trace_5panel.pdf`](file:///home/ubuntu/papajohn/AMAZING_6G/PAPER/NEW_APPROACH/adaptive_telemetry_steering/figures/hero_trace_5panel.pdf)
    * Layout:
      - Subplot (a): Channel Scenario (Raw RTT, Sliding Window Mean, and EWMA against $\tau = 65\text{ ms}$).
      - Subplot (b): Policy 1 trajectory showing premature false switch at $t = 5.01\text{ s}$.
@@ -130,7 +130,7 @@ Two graphical representations have been generated to illustrate these dynamics:
      - Subplot (d): Policy 3 trajectory showing burst dilution and fast trigger at $t = 10.02\text{ s}$.
      - Subplot (e): Policy 4 trajectory showing conservative filtering and trigger at $t = 10.12\text{ s}$.
 2. **1-Plot Compact Unified Figure:**  
-   * Files: [`plots/hero_trace_compact.png`](file:///home/ubuntu/papajohn/AMAZING_6G/PAPER/NEW_APPROACH/paper_repo/NEW%20EXPERIMENTS/plots/hero_trace_compact.png) and [`plots/hero_trace_compact.pdf`](file:///home/ubuntu/papajohn/AMAZING_6G/PAPER/NEW_APPROACH/paper_repo/NEW%20EXPERIMENTS/plots/hero_trace_compact.pdf)
+   * Files: [`figures/hero_trace_compact.png`](file:///home/ubuntu/papajohn/AMAZING_6G/PAPER/NEW_APPROACH/adaptive_telemetry_steering/figures/hero_trace_compact.png) and [`figures/hero_trace_compact.pdf`](file:///home/ubuntu/papajohn/AMAZING_6G/PAPER/NEW_APPROACH/adaptive_telemetry_steering/figures/hero_trace_compact.pdf)
    * Layout: Single space-saving plot overlaying all 4 policy trajectories, shaded burst and step zones, and trigger markers ($t$ and $T$).
 
 ---

@@ -6,7 +6,7 @@ This document details the experimental design, stochastic channel model, and sta
 
 ## 1. Overview & Evaluation Objective
 
-While the deterministic **Hero Trace** ([`phase3_eval/HERO_TRACE_EXPERIMENT.md`](file:///home/ubuntu/papajohn/AMAZING_6G/PAPER/NEW_APPROACH/paper_repo/NEW%20EXPERIMENTS/phase3_eval/HERO_TRACE_EXPERIMENT.md)) provides precise temporal dissection of a single controlled micro-burst and step event, real-world wireless and non-terrestrial backhauls exhibit stochastic fading, variable burst intervals, and unpredictable failure onsets.
+While the deterministic **Hero Trace** ([`HERO_TRACE_PROTOCOL.md`](file:///home/ubuntu/papajohn/AMAZING_6G/PAPER/NEW_APPROACH/adaptive_telemetry_steering/docs/HERO_TRACE_PROTOCOL.md)) provides precise temporal dissection of a single controlled micro-burst and step event, real-world wireless and non-terrestrial backhauls exhibit stochastic fading, variable burst intervals, and unpredictable failure onsets.
 
 The randomized stochastic benchmark stress-tests the $2 \times 2$ policy matrix over a large statistical sample ($N = 100$ independent trials per policy, 400 trials total) to quantify:
 1. **False Handover Ratio (%):** The probability that a policy mistakenly triggers a route switch during pre-step transient noise ($t < t_{\text{step}}$).
@@ -85,19 +85,19 @@ For each trial, the orchestrator records:
 
 ## 4. Execution & Orchestration
 
-The test harness is implemented in [`phase3_eval/run_stochastic_eval.py`](file:///home/ubuntu/papajohn/AMAZING_6G/PAPER/NEW_APPROACH/paper_repo/NEW%20EXPERIMENTS/phase3_eval/run_stochastic_eval.py).
+The test harness is implemented in [`experiments/stochastic/run_stochastic_eval.py`](file:///home/ubuntu/papajohn/AMAZING_6G/PAPER/NEW_APPROACH/adaptive_telemetry_steering/experiments/stochastic/run_stochastic_eval.py).
 
 ```bash
 # Execute 100 runs per policy (400 trials total) across 20.0s timeline
-sudo python3 phase3_eval/run_stochastic_eval.py --runs 100 --duration 20.0
+sudo python3 experiments/stochastic/run_stochastic_eval.py --runs 100 --duration 20.0
 ```
 
 * Results are written to:
-  * Raw trial-by-trial log: `ANALYSIS_RESULTS/PHASE3/stochastic_trials.csv`
-  * Statistical summary: `ANALYSIS_RESULTS/PHASE3/stochastic_summary.json`
+  * Raw trial-by-trial log: `data/stochastic/stochastic_trials.csv`
+  * Statistical summary: `data/stochastic/stochastic_summary.json`
 * Once complete, publication plots and LaTeX tables are generated via:
   ```bash
-  python3 phase3_eval/analyze_phase3.py
+  python3 analysis/analyze_phase3.py
   ```
 
 ---
@@ -146,8 +146,8 @@ Execution of the full 400-trial benchmark produced the following aggregate metri
 | **P4 (Win + Hyst)** | 72% (28% failure) | Slowest ($142.9\text{ ms}$) | $O(N)$ | Excessive latency penalty |
 
 ### 5.3 Generated Visualizations
-* **Compact Trade-Off with Embedded Table:** [`plots/stochastic_tradeoff_compact_table.pdf`](file:///home/ubuntu/papajohn/AMAZING_6G/PAPER/NEW_APPROACH/paper_repo/NEW%20EXPERIMENTS/plots/stochastic_tradeoff_compact_table.pdf) (Clean scatter points with embedded $\text{Mean} \pm \text{Std}$ table in the upper-right canvas).
-* **Compact Minimalist Scatter:** [`plots/stochastic_tradeoff_clean.pdf`](file:///home/ubuntu/papajohn/AMAZING_6G/PAPER/NEW_APPROACH/paper_repo/NEW%20EXPERIMENTS/plots/stochastic_tradeoff_clean.pdf) (Minimalist markers, uncluttered canvas).
-* **Trade-Off with Table Legend:** [`plots/stochastic_tradeoff_with_table.pdf`](file:///home/ubuntu/papajohn/AMAZING_6G/PAPER/NEW_APPROACH/paper_repo/NEW%20EXPERIMENTS/plots/stochastic_tradeoff_with_table.pdf) (Detailed tabular legend containing $\text{Mean} \pm \text{Std}$).
-* **Boxplots:** [`plots/stochastic_boxplots.pdf`](file:///home/ubuntu/papajohn/AMAZING_6G/PAPER/NEW_APPROACH/paper_repo/NEW%20EXPERIMENTS/plots/stochastic_boxplots.pdf) (Route Flapping Stability and SLA Detection Delay distributions).
+* **Compact Trade-Off with Embedded Table:** [`figures/stochastic_tradeoff_compact_table.pdf`](file:///home/ubuntu/papajohn/AMAZING_6G/PAPER/NEW_APPROACH/adaptive_telemetry_steering/figures/stochastic_tradeoff_compact_table.pdf) (Clean scatter points with embedded $\text{Mean} \pm \text{Std}$ table in the upper-right canvas).
+* **Compact Minimalist Scatter:** [`figures/stochastic_tradeoff_clean.pdf`](file:///home/ubuntu/papajohn/AMAZING_6G/PAPER/NEW_APPROACH/adaptive_telemetry_steering/figures/stochastic_tradeoff_clean.pdf) (Minimalist markers, uncluttered canvas).
+* **Trade-Off with Table Legend:** [`figures/stochastic_tradeoff_with_table.pdf`](file:///home/ubuntu/papajohn/AMAZING_6G/PAPER/NEW_APPROACH/adaptive_telemetry_steering/figures/stochastic_tradeoff_with_table.pdf) (Detailed tabular legend containing $\text{Mean} \pm \text{Std}$).
+* **Boxplots:** [`figures/stochastic_boxplots.pdf`](file:///home/ubuntu/papajohn/AMAZING_6G/PAPER/NEW_APPROACH/adaptive_telemetry_steering/figures/stochastic_boxplots.pdf) (Route Flapping Stability and SLA Detection Delay distributions).
 

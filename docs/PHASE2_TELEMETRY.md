@@ -20,7 +20,7 @@ Phase 2 designs, deploys, and benchmarks:
 
 ## 2. Experimental Setup & Topology Architecture
 
-The Phase 2 experimental environment is provisioned inside Linux network namespaces (`netns`) and shaped via Linux Traffic Control (`tc`) using [`scripts/setup_phase2_topology.sh`](file:///home/ubuntu/papajohn/AMAZING_6G/PAPER/NEW_APPROACH/paper_repo/NEW%20EXPERIMENTS/scripts/setup_phase2_topology.sh).
+The Phase 2 experimental environment is provisioned inside Linux network namespaces (`netns`) and shaped via Linux Traffic Control (`tc`) using [`topology/setup_topology.sh`](file:///home/ubuntu/papajohn/AMAZING_6G/PAPER/NEW_APPROACH/adaptive_telemetry_steering/topology/setup_topology.sh).
 
 ```
 +---------------------------------------------------------------------------------------+
@@ -93,7 +93,7 @@ Any packet bound to `10.0.1.1` traverses Link A regardless of the main routing t
 
 ## 3. Telemetry Engine Implementation
 
-The telemetry engine is implemented in [`phase2_telemetry/telemetry_daemon.py`](file:///home/ubuntu/papajohn/AMAZING_6G/PAPER/NEW_APPROACH/paper_repo/NEW%20EXPERIMENTS/phase2_telemetry/telemetry_daemon.py).
+The telemetry engine is implemented in [`core/telemetry_daemon.py`](file:///home/ubuntu/papajohn/AMAZING_6G/PAPER/NEW_APPROACH/adaptive_telemetry_steering/core/telemetry_daemon.py).
 
 ### 3.1 Raw ICMP Prober Mechanics
 * **Socket Type:** `socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)`.
@@ -122,7 +122,7 @@ On every polling interval $t$ ($T_{\text{poll}} = 100\text{ ms}$), the daemon up
 
 ## 4. The $2 \times 2$ Decision Policy Taxonomy
 
-The flow steering engine ([`phase2_telemetry/steering_controller.py`](file:///home/ubuntu/papajohn/AMAZING_6G/PAPER/NEW_APPROACH/paper_repo/NEW%20EXPERIMENTS/phase2_telemetry/steering_controller.py)) formalizes four progressive steering algorithms across Filtering Depth and Temporal Persistence:
+The flow steering engine ([`core/steering_controller.py`](file:///home/ubuntu/papajohn/AMAZING_6G/PAPER/NEW_APPROACH/adaptive_telemetry_steering/core/steering_controller.py)) formalizes four progressive steering algorithms across Filtering Depth and Temporal Persistence:
 
 | Persistence \ Depth | Single Sample (Raw RTT) | Averaged (Sliding Window, $N=3$) |
 | :--- | :--- | :--- |

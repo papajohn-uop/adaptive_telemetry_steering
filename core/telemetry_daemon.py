@@ -46,7 +46,7 @@ def ensure_ns_client(target_ns: str = "ns_client") -> bool:
     if not os.path.exists(ns_path):
         raise FileNotFoundError(
             f"Network namespace file '{ns_path}' does not exist. "
-            f"Please run 'sudo ./scripts/setup_phase2_topology.sh setup' first."
+            f"Please run 'sudo ./topology/setup_topology.sh setup' first."
         )
 
     try:
@@ -179,6 +179,19 @@ class PathTelemetry:
     """
     Maintains running latency statistics and decision counters for a single path.
     Implements equations (5) through (10) from the conference paper.
+
+    How it works:
+      1. Out-of-band ICMP Probing: Uses RawICMPProber bound to a specific source IP
+         (e.g., 10.0.1.1 for Link A or 10.0.2.1 for Link B) to send ICMP Echo Requests
+         to the destination without interfering with application TCP sockets.
+      2. Multi-metric Latency Tracking:
+         - Instantaneous RTT: The exact round-trip duration of the most recent probe.
+         - EWMA Smoothed RTT (SRTT): RFC 6298 smoothed latency filter (alpha = 0.125).
+         - Sliding Window Mean (mu_W): Simple moving average across the last N samples.
+      3. Persistence Hysteresis Counters:
+         - c_raw: Number of consecutive raw RTT samples exceeding SLA ceiling tau (65 ms).
+         - c_win: Number of consecutive window means exceeding SLA ceiling tau.
+         Counters reset to 0 as soon as a sample/mean falls back below tau.
     """
 
     def __init__(
@@ -193,52 +206,69 @@ class PathTelemetry:
         self.name = name
         self.src_ip = src_ip
         self.dst_ip = dst_ip
-        self.tau = tau
-        self.window_size = window_size
-        self.alpha = alpha
+        self.tau = tau                      # SLA latency violation threshold ceiling (e.g. 65.0 ms)
+        self.window_size = window_size      # Window depth N (e.g., 3 samples = 300 ms at 10 Hz)
+        self.alpha = alpha                  # EWMA smoothing weight (alpha = 0.125 = 1/8)
 
+        # Raw ICMP socket prober bound to source IP (steers probe via policy routing)
         self.prober = RawICMPProber(src_ip, dst_ip)
+
+        # O(1) Ring buffer for sliding window average: automatically discards oldest item on append
         self.window: deque = deque(maxlen=window_size)
+
+        # State variables
         self.srtt: Optional[float] = None
         self.last_rtt: Optional[float] = None
-        self.c_raw: int = 0
-        self.c_win: int = 0
+        self.c_raw: int = 0                 # Consecutive raw breaches counter
+        self.c_win: int = 0                 # Consecutive window breaches counter
         self.total_probes: int = 0
         self.lost_probes: int = 0
 
     def sample(self) -> Tuple[Optional[float], Optional[float], Optional[float], int, int]:
         """
         Executes one probe tick, updates window and counters.
+
+        Workflow:
+          Step 1: Emit an ICMP Echo Request and await response to measure RTT.
+          Step 2: If a timeout/drop occurs, record probe loss and treat as severe degradation (999.0 ms).
+          Step 3: Update EWMA Smoothed RTT: SRTT = (1 - alpha) * SRTT + alpha * RTT.
+          Step 4: Push sample into the O(1) FIFO ring buffer and calculate rolling mean mu_W.
+          Step 5: Update persistence counters: increment if > tau, reset to 0 if <= tau.
+
         Returns:
             (raw_rtt, srtt, rolling_mean, c_raw, c_win)
         """
+        # Step 1: Send ICMP Echo Request with timestamp payload and await Echo Reply
         rtt = self.prober.ping()
         self.total_probes += 1
         self.last_rtt = rtt
 
+        # Step 2: Handle packet loss / timeouts
         if rtt is None:
             self.lost_probes += 1
-            # Treat loss as severe degradation
+            # Treat loss as severe degradation to penalize degraded path
             effective_rtt = 999.0
         else:
             effective_rtt = rtt
 
-        # 1. Update EWMA Smoothed RTT (SRTT)
+        # Step 3: Update EWMA Smoothed RTT (RFC 6298 estimator)
         if self.srtt is None:
             self.srtt = effective_rtt
         else:
             self.srtt = (1.0 - self.alpha) * self.srtt + self.alpha * effective_rtt
 
-        # 2. Update FIFO sliding window
+        # Step 4: Update FIFO sliding window (deque with maxlen acts as an O(1) ring buffer)
         self.window.append(effective_rtt)
         rolling_mean = sum(self.window) / len(self.window)
 
-        # 3. Update temporal persistence counters
+        # Step 5: Update temporal persistence counters (hysteresis filters)
+        # Raw RTT persistence counter (resets immediately if condition clears)
         if effective_rtt > self.tau:
             self.c_raw += 1
         else:
             self.c_raw = 0
 
+        # Sliding window persistence counter (resets immediately if window mean clears)
         if rolling_mean > self.tau:
             self.c_win += 1
         else:
@@ -247,6 +277,7 @@ class PathTelemetry:
         return rtt, self.srtt, rolling_mean, self.c_raw, self.c_win
 
     def close(self):
+        """Release raw socket resources."""
         self.prober.close()
 
 
@@ -255,29 +286,56 @@ class TelemetryDaemon:
     High-level telemetry coordinator concurrently monitoring:
       - Link A (Fiber: 10.0.1.1 -> 10.0.3.2)
       - Link B (Cellular: 10.0.2.1 -> 10.0.3.2)
+
+    How it works:
+      1. Namespace Alignment: Ensures execution inside 'ns_client' network namespace
+         so that virtual interfaces (veth_client_a, veth_client_b) and Linux policy
+         routing rules (lookup tables 101/102) are directly accessible.
+      2. Dual-Path Management: Instantiates two independent PathTelemetry objects:
+         - link_a: Probes the pristine fiber backhaul (bound to 10.0.1.1, ~4.3 ms RTT).
+         - link_b: Probes the cellular/wireless backhaul (bound to 10.0.2.1, ~50.7 ms RTT).
+      3. Synchronized Probing (probe_once): Every polling period, queries both paths
+         in succession, aggregating raw RTT, smoothed SRTT, rolling mean, and hysteresis counters.
+      4. Periodic Execution Loop (run):
+         - Controls sampling cadence (e.g., 100 ms interval = 10 Hz polling).
+         - Compensates for probe computation time using monotonic clock delta to prevent timing drift.
+         - Streams structured telemetry metrics to console and optional CSV log file.
     """
 
     def __init__(
         self,
-        interval: float = 0.1,  # 100 ms
-        tau: float = 65.0,
-        window_size: int = 3,
+        interval: float = 0.1,  # Default: 100 ms polling cadence (10 Hz)
+        tau: float = 65.0,      # Default: 65.0 ms SLA latency ceiling
+        window_size: int = 3,   # Default: 3-sample sliding window depth
         dst_ip: str = "10.0.3.2",
     ):
+        # Step 1: Switch / verify execution inside the client network namespace
         ensure_ns_client("ns_client")
         self.interval = interval
         self.tau = tau
         self.window_size = window_size
         self.dst_ip = dst_ip
 
+        # Step 2: Initialize dedicated telemetry monitors for Link A and Link B
+        # Policy routing rules direct probes bound to 10.0.1.1 over Link A and 10.0.2.1 over Link B
         self.link_a = PathTelemetry("Link A (Fiber)", "10.0.1.1", dst_ip, tau, window_size)
         self.link_b = PathTelemetry("Link B (Cellular)", "10.0.2.1", dst_ip, tau, window_size)
         self.running = False
 
     def probe_once(self) -> Dict[str, Any]:
-        """Probe both links synchronously once and return metric dictionary."""
+        """
+        Probe both links synchronously once and return an aggregated metric dictionary.
+
+        Workflow:
+          - Captures high-precision epoch timestamp.
+          - Samples Link A (returns raw RTT, EWMA SRTT, rolling mean, and counters).
+          - Samples Link B (returns raw RTT, EWMA SRTT, rolling mean, and counters).
+          - Packages all metrics into a structured dictionary for the steering controller.
+        """
         t_epoch = time.time()
+        # Sample Link A (Fiber path)
         rtt_a, srtt_a, mean_a, c_raw_a, c_win_a = self.link_a.sample()
+        # Sample Link B (Cellular / primary path)
         rtt_b, srtt_b, mean_b, c_raw_b, c_win_b = self.link_b.sample()
 
         return {
@@ -299,7 +357,19 @@ class TelemetryDaemon:
         }
 
     def run(self, count: Optional[int] = None, log_file: Optional[str] = None, verbose: bool = True):
-        """Run telemetry loop for specified count or indefinitely."""
+        """
+        Run continuous telemetry loop for specified count or indefinitely.
+
+        Workflow:
+          1. Opens CSV output log (if path specified) and writes schema header.
+          2. Loops while self.running is True:
+             a. Marks loop start via high-precision monotonic clock (time.perf_counter).
+             b. Executes probe_once() to poll both links.
+             c. Logs row to CSV and displays real-time console table.
+             d. Increments tick counter; halts if count limit reached.
+             e. Calculates remaining interval (interval - elapsed) and sleeps to prevent drift.
+          3. On exit or interrupt, ensures file flush and closes socket descriptors.
+        """
         self.running = True
         fh = open(log_file, "w") if log_file else None
         if fh:
@@ -320,10 +390,13 @@ class TelemetryDaemon:
         try:
             while self.running:
                 loop_start = time.perf_counter()
+                
+                # Poll both links
                 data = self.probe_once()
                 la = data["link_a"]
                 lb = data["link_b"]
 
+                # Format metrics for console display
                 rtt_a_str = f"{la['rtt']:.2f} ms" if la["rtt"] is not None else "LOST"
                 rtt_b_str = f"{lb['rtt']:.2f} ms" if lb["rtt"] is not None else "LOST"
                 mean_b_str = f"{lb['mean']:.2f} ms" if lb["mean"] is not None else "N/A"
@@ -333,6 +406,7 @@ class TelemetryDaemon:
                     b_detail = f"{rtt_b_str} (mean: {mean_b_str})"
                     print(f"{tick:<6} | {rtt_a_str:<20} | {b_detail:<32} | {cnt_str:<10}")
 
+                # Append record to CSV log
                 if fh:
                     fh.write(
                         f"{data['timestamp']:.6f},{tick},"
@@ -346,7 +420,7 @@ class TelemetryDaemon:
                 if count and tick >= count:
                     break
 
-                # Precise sleep accounting for execution time
+                # Precise sleep calculation: subtracts probe execution time from interval to eliminate drift
                 elapsed = time.perf_counter() - loop_start
                 sleep_time = max(0.0, self.interval - elapsed)
                 time.sleep(sleep_time)
@@ -360,6 +434,7 @@ class TelemetryDaemon:
             self.close()
 
     def close(self):
+        """Cleanly close raw sockets on both path monitors."""
         self.link_a.close()
         self.link_b.close()
 
